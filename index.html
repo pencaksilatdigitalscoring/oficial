@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Persetujuan Timbang Badan - Pencak Silat</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- Signature Pad -->
+    <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap');
+        body { 
+            font-family: 'Montserrat', sans-serif; 
+            background-color: #f8fafc; 
+            color: #1e293b; 
+            margin: 0; 
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        .custom-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .sig-canvas {
+            width: 100%;
+            height: 200px;
+            border: 2px dashed #94a3b8;
+            border-radius: 0.75rem;
+            background-color: #ffffff;
+            touch-action: none; /* Penting agar tidak scrolling saat tanda tangan */
+            cursor: crosshair;
+        }
+
+        /* Loader Animation */
+        .spinner { border: 4px solid rgba(0,0,0,0.1); width: 40px; height: 40px; border-radius: 50%; border-left-color: #0ea5e9; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="flex flex-col h-screen overflow-hidden">
+
+    <!-- HEADER -->
+    <header class="bg-white shadow-sm shrink-0 z-20">
+        <div class="p-4 flex items-center justify-center bg-slate-800 text-white relative">
+            <i class="fas fa-file-signature text-2xl absolute left-4"></i>
+            <div class="text-center">
+                <h1 class="font-black uppercase text-sm leading-tight tracking-wider text-amber-400">PERSETUJUAN OFFICIAL</h1>
+                <p class="text-[9px] font-bold opacity-80 uppercase tracking-widest">Timbang Badan Pencak Silat</p>
+            </div>
+        </div>
+    </header>
+
+    <!-- CONTENT BODY -->
+    <main class="flex-1 overflow-y-auto custom-scroll p-4" id="app-container">
+        <!-- Default Loading/Waiting Screen -->
+        <div class="flex flex-col items-center justify-center h-full text-center px-6">
+            <div class="spinner mb-6"></div>
+            <h2 class="text-lg font-black text-slate-700 uppercase mb-2">Menunggu Operator...</h2>
+            <p class="text-xs font-bold text-slate-500">Layar ini akan otomatis menampilkan data saat operator memilih partai untuk ditimbang.</p>
+        </div>
+    </main>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    // Konfigurasi Firebase disamakan dengan sistem utama
+    const firebaseConfig = {
+  apiKey: "AIzaSyDuC-mjc2LiPQ4Ouiq5DBsMPPad-pPb3h0",
+  authDomain: "kejurkot-ambon.firebaseapp.com",
+  databaseURL: "https://kejurkot-ambon-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "kejurkot-ambon",
+  storageBucket: "kejurkot-ambon.firebasestorage.app",
+  messagingSenderId: "545075134619",
+  appId: "1:545075134619:web:ec14b7287c636ebd80063e"
+};
+
+    const app = initializeApp(firebaseConfig);
+    const database = getDatabase(app);
+
+    // Variabel State
+    let activePartaiNum = null;
+    let matchUnsubscribe = null;
+    let renderedPartai = null;
+    
+    // Instance Signature Pad
+    window.sigPadB = null;
+    window.sigPadM = null;
+
+    // 1. DENGARKAN PARTAI YANG DIAKTIFKAN OLEH OPERATOR
+    const activeRef = ref(database, 'pencak_scoring_state/active_weighin_match');
+    onValue(activeRef, (snapshot) => {
+        const partaiNum = snapshot.val();
+        if (partaiNum) {
+            if (activePartaiNum !== partaiNum) {
+                activePartaiNum = partaiNum;
+                listenToMatch(partaiNum);
+            }
+        } else {
+            showWaitingScreen();
+        }
+    });
+
+    // 2. DENGARKAN DATA SPESIFIK DARI PARTAI YANG AKTIF (REALTIME)
+    function listenToMatch(partaiNum) {
+        const arrayIdx = partaiNum - 1;
+        const matchRef = ref(database, `pencak_scoring_state/matches/${arrayIdx}`);
+        
+        if (matchUnsubscribe) matchUnsubscribe(); // Hapus listener sebelumnya
+        
+        matchUnsubscribe = onValue(matchRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                // Jika partai berbeda dari yang sedang dirender, buat ulang HTML
+                if (renderedPartai !== data.p) {
+                    fullRenderHTML(data);
+                    renderedPartai = data.p;
+                } else {
+                    // Jika partai sama (hanya update berat/status dari operator), update DOM saja (tidak menghapus canvas)
+                    partialUpdateDOM(data);
+                }
+            } else {
+                showWaitingScreen();
+            }
+        });
+    }
+
+    // Tampilan Standby
+    function showWaitingScreen() {
+        activePartaiNum = null;
+        renderedPartai = null;
+        document.getElementById('app-container').innerHTML = `
+            <div class="flex flex-col items-center justify-center h-full text-center px-6 transition-all duration-500">
+                <i class="fas fa-satellite-dish text-5xl text-slate-300 mb-6 animate-pulse"></i>
+                <h2 class="text-lg font-black text-slate-700 uppercase mb-2">Menunggu Partai Aktif</h2>
+                <p class="text-xs font-bold text-slate-500">Tampilan akan muncul otomatis ketika Operator mengaktifkan timbang badan.</p>
+            </div>
+        `;
+    }
+
+    // Fungsi Pembantu Batas Berat (Untuk Info Tambahan)
+    function getWeightLimits(cat, kelas, gender) {
+        cat = (cat || "").toUpperCase().trim(); kelas = (kelas || "").toUpperCase().trim(); gender = (gender || "").toUpperCase().trim();
+        if (cat.includes("USIA DINI")) {
+            switch(kelas) { case 'A': return { min: 26, max: 28, strictMin: false }; case 'B': return { min: 28, max: 30, strictMin: true }; case 'C': return { min: 30, max: 32, strictMin: true }; case 'D': return { min: 32, max: 34, strictMin: true }; case 'E': return { min: 34, max: 36, strictMin: true }; case 'F': return { min: 36, max: 38, strictMin: true }; case 'G': return { min: 38, max: 40, strictMin: true }; case 'H': return { min: 40, max: 42, strictMin: true }; case 'I': return { min: 42, max: 44, strictMin: true }; case 'J': return { min: 44, max: 46, strictMin: true }; case 'OPEN': case 'BEBAS': return { min: 64, max: 68, strictMin: true }; default: return { min:0, max:999, strictMin:false };}
+        } else if (cat.includes("PRA REMAJA")) {
+            switch(kelas) { case 'A': return { min: 30, max: 33, strictMin: false }; case 'B': return { min: 33, max: 36, strictMin: true }; case 'C': return { min: 36, max: 39, strictMin: true }; case 'D': return { min: 39, max: 42, strictMin: true }; case 'E': return { min: 42, max: 45, strictMin: true }; case 'F': return { min: 45, max: 48, strictMin: true }; case 'G': return { min: 48, max: 51, strictMin: true }; case 'H': return { min: 51, max: 54, strictMin: true }; case 'I': return { min: 54, max: 57, strictMin: true }; case 'OPEN': case 'BEBAS': return { min: 78, max: 84, strictMin: true }; default: return { min:0, max:999, strictMin:false };}
+        } else if (cat === "REMAJA") {
+            switch(kelas) { case 'A': return { min: 39, max: 43, strictMin: false }; case 'B': return { min: 43, max: 47, strictMin: true }; case 'C': return { min: 47, max: 51, strictMin: true }; case 'D': return { min: 51, max: 55, strictMin: true }; case 'E': return { min: 55, max: 59, strictMin: true }; case 'F': return { min: 59, max: 63, strictMin: true }; case 'G': return { min: 63, max: 67, strictMin: true }; case 'H': return { min: 67, max: 71, strictMin: true }; case 'OPEN': case 'BEBAS': return gender==='PUTRA'?{min:78,max:84,strictMin:true}:{min:79,max:94,strictMin:true}; default: return { min:0, max:999, strictMin:false };}
+        } else if (cat === "DEWASA") {
+            switch(kelas) { case 'A': return { min: 45, max: 50, strictMin: false }; case 'B': return { min: 50, max: 55, strictMin: true }; case 'C': return { min: 55, max: 60, strictMin: true }; case 'D': return { min: 60, max: 65, strictMin: true }; case 'E': return { min: 65, max: 70, strictMin: true }; case 'F': return { min: 70, max: 75, strictMin: true }; case 'G': return { min: 75, max: 80, strictMin: true }; case 'OPEN': case 'BEBAS': return gender==='PUTRA'?{min:95,max:110,strictMin:true}:{min:85,max:100,strictMin:true}; default: return { min:0, max:999, strictMin:false };}
+        }
+        return null; 
+    }
+
+    // Render HTML Pertama Kali (atau saat berpindah partai)
+    function fullRenderHTML(m) {
+        const isByeB = (m.b === 'BYE' || !m.b);
+        const isByeM = (m.m === 'BYE' || !m.m);
+        
+        const limits = getWeightLimits(m.cat, m.kelas, m.gender);
+        let limitText = "BEBAS";
+        if(limits) {
+            const minSign = limits.strictMin ? "> " : "";
+            const maxText = limits.max === 999 ? "Kg Keatas" : `${limits.max} Kg`;
+            limitText = `${minSign}${limits.min} - ${maxText}`;
+        }
+
+        const html = `
+            <div class="max-w-xl mx-auto pb-10 fade-in">
+                <!-- Info Partai -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-5 text-center">
+                    <span class="inline-block bg-sky-100 text-sky-700 font-black px-4 py-1 rounded-full text-xs mb-2">PARTAI ${m.p}</span>
+                    <h2 class="text-sm font-black uppercase text-slate-800">${m.fase} - KELAS ${m.kelas} ${m.cat}</h2>
+                    <p class="text-[10px] font-bold text-slate-500 uppercase mt-1">GENDER: ${m.gender} | BATAS BERAT: ${limitText}</p>
+                </div>
+
+                <!-- CARD BIRU -->
+                <div class="bg-white rounded-[1.5rem] shadow-lg border border-slate-200 overflow-hidden mb-6 relative">
+                    <div class="absolute top-0 left-0 w-2 h-full bg-blue-600 z-10"></div>
+                    <div class="p-5 pl-7 flex flex-col">
+                        ${!isByeB ? `
+                            <div class="flex items-center gap-4 mb-4 border-b border-slate-100 pb-4">
+                                <img src="${m.fotoB || m.photoB || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(m.b) + '&background=2563eb&color=fff&size=128&bold=true'}" alt="Foto" class="w-16 h-16 rounded-full border-4 border-blue-100 shadow-sm object-cover">
+                                <div>
+                                    <h3 class="text-base font-black uppercase text-blue-700 leading-tight mb-1">${m.b}</h3>
+                                    <p class="text-[10px] font-bold text-slate-500 uppercase">${m.kb}</p>
+                                </div>
+                            </div>
+                            
+                            <!-- Realtime Berat Timbangan -->
+                            <div class="bg-slate-50 rounded-xl p-4 mb-5 border border-slate-200 flex justify-between items-center">
+                                <div>
+                                    <p class="text-[9px] font-black text-slate-400 uppercase mb-1">Berat Timbangan</p>
+                                    <p id="tampil-beratB" class="text-2xl font-black text-slate-800">${m.beratB ? m.beratB + ' Kg' : '- Kg'}</p>
+                                </div>
+                                <div id="tampil-statusB" class="${getStatusClass(m.statusB)} px-4 py-2 rounded-lg text-xs font-black uppercase shadow-sm">
+                                    ${m.statusB || 'BELUM'}
+                                </div>
+                            </div>
+
+                            <!-- Area Persetujuan -->
+                            <div id="area-ttdB" class="${m.officialApprovedB ? 'hidden' : 'block'}">
+                                <p class="text-xs font-black text-slate-700 mb-2 uppercase"><i class="fas fa-pen-nib mr-1"></i> Tanda Tangan Official Biru</p>
+                                <canvas id="canvasB" class="sig-canvas"></canvas>
+                                <div class="flex gap-2 mt-3">
+                                    <button onclick="clearCanvas('B')" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-[11px] py-3 rounded-xl uppercase transition-all"><i class="fas fa-eraser mr-1"></i> Ulangi</button>
+                                    <button onclick="saveApproval('B', ${m.p})" class="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[11px] py-3 rounded-xl uppercase shadow-md active:scale-95 transition-all"><i class="fas fa-check-circle mr-1"></i> Setuju & Simpan</button>
+                                </div>
+                            </div>
+
+                            <!-- Tampilan Disetujui -->
+                            <div id="area-approvedB" class="${m.officialApprovedB ? 'block' : 'hidden'} text-center bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                                <i class="fas fa-check-circle text-4xl text-emerald-500 mb-2 block"></i>
+                                <p class="text-xs font-black text-emerald-700 uppercase mb-3">Telah Disetujui Official</p>
+                                <img id="img-ttdB" src="${m.signatureB || ''}" class="h-20 mx-auto border border-slate-300 rounded-lg bg-white p-1">
+                            </div>
+                        ` : `
+                            <h3 class="text-lg font-black uppercase text-blue-700 mb-1">SUDUT BIRU: BYE</h3>
+                            <div class="text-center text-xs font-bold text-slate-400 italic py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200 mt-4">Peserta Kosong (BYE) / Tidak perlu tanda tangan</div>
+                        `}
+                    </div>
+                </div>
+
+                <!-- CARD MERAH -->
+                <div class="bg-white rounded-[1.5rem] shadow-lg border border-slate-200 overflow-hidden relative">
+                    <div class="absolute top-0 right-0 w-2 h-full bg-red-600 z-10"></div>
+                    <div class="p-5 pr-7 flex flex-col">
+                        ${!isByeM ? `
+                            <div class="flex flex-row-reverse items-center gap-4 mb-4 border-b border-slate-100 pb-4 text-right">
+                                <img src="${m.fotoM || m.photoM || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(m.m) + '&background=dc2626&color=fff&size=128&bold=true'}" alt="Foto" class="w-16 h-16 rounded-full border-4 border-red-100 shadow-sm object-cover">
+                                <div>
+                                    <h3 class="text-base font-black uppercase text-red-700 leading-tight mb-1">${m.m}</h3>
+                                    <p class="text-[10px] font-bold text-slate-500 uppercase">${m.km}</p>
+                                </div>
+                            </div>
+                            
+                            <!-- Realtime Berat Timbangan -->
+                            <div class="bg-slate-50 rounded-xl p-4 mb-5 border border-slate-200 flex flex-row-reverse justify-between items-center text-right">
+                                <div>
+                                    <p class="text-[9px] font-black text-slate-400 uppercase mb-1">Berat Timbangan</p>
+                                    <p id="tampil-beratM" class="text-2xl font-black text-slate-800">${m.beratM ? m.beratM + ' Kg' : '- Kg'}</p>
+                                </div>
+                                <div id="tampil-statusM" class="${getStatusClass(m.statusM)} px-4 py-2 rounded-lg text-xs font-black uppercase shadow-sm">
+                                    ${m.statusM || 'BELUM'}
+                                </div>
+                            </div>
+
+                            <!-- Area Persetujuan -->
+                            <div id="area-ttdM" class="${m.officialApprovedM ? 'hidden' : 'block'} text-right">
+                                <p class="text-xs font-black text-slate-700 mb-2 uppercase"><i class="fas fa-pen-nib mr-1"></i> Tanda Tangan Official Merah</p>
+                                <canvas id="canvasM" class="sig-canvas"></canvas>
+                                <div class="flex flex-row-reverse gap-2 mt-3">
+                                    <button onclick="clearCanvas('M')" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-[11px] py-3 rounded-xl uppercase transition-all"><i class="fas fa-eraser mr-1"></i> Ulangi</button>
+                                    <button onclick="saveApproval('M', ${m.p})" class="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[11px] py-3 rounded-xl uppercase shadow-md active:scale-95 transition-all"><i class="fas fa-check-circle mr-1"></i> Setuju & Simpan</button>
+                                </div>
+                            </div>
+
+                            <!-- Tampilan Disetujui -->
+                            <div id="area-approvedM" class="${m.officialApprovedM ? 'block' : 'hidden'} text-center bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                                <i class="fas fa-check-circle text-4xl text-emerald-500 mb-2 block"></i>
+                                <p class="text-xs font-black text-emerald-700 uppercase mb-3">Telah Disetujui Official</p>
+                                <img id="img-ttdM" src="${m.signatureM || ''}" class="h-20 mx-auto border border-slate-300 rounded-lg bg-white p-1">
+                            </div>
+                        ` : `
+                            <h3 class="text-lg font-black uppercase text-red-700 mb-1 text-right">SUDUT MERAH: BYE</h3>
+                            <div class="text-center text-xs font-bold text-slate-400 italic py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200 mt-4">Peserta Kosong (BYE) / Tidak perlu tanda tangan</div>
+                        `}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('app-container').innerHTML = html;
+
+        // Inisialisasi Canvas jika pesertanya bukan BYE dan belum di-approve
+        setTimeout(() => {
+            if (!isByeB && !m.officialApprovedB) window.sigPadB = initCanvas('canvasB');
+            if (!isByeM && !m.officialApprovedM) window.sigPadM = initCanvas('canvasM');
+        }, 100);
+    }
+
+    // Update DOM Saja (Realtime data berubah tanpa reset canvas)
+    function partialUpdateDOM(m) {
+        // Update Biru
+        if (m.b && m.b !== 'BYE') {
+            const beratB = document.getElementById('tampil-beratB');
+            const statusB = document.getElementById('tampil-statusB');
+            if(beratB) beratB.innerText = m.beratB ? m.beratB + ' Kg' : '- Kg';
+            if(statusB) {
+                statusB.innerText = m.statusB || 'BELUM';
+                statusB.className = `${getStatusClass(m.statusB)} px-4 py-2 rounded-lg text-xs font-black uppercase shadow-sm`;
+            }
+            
+            // Check transisi ke approved jika divice lain mengupdate
+            if(m.officialApprovedB) {
+                const areaTtd = document.getElementById('area-ttdB');
+                const areaApp = document.getElementById('area-approvedB');
+                const img = document.getElementById('img-ttdB');
+                if(areaTtd) areaTtd.classList.replace('block', 'hidden');
+                if(areaApp) areaApp.classList.replace('hidden', 'block');
+                if(img && m.signatureB) img.src = m.signatureB;
+            }
+        }
+
+        // Update Merah
+        if (m.m && m.m !== 'BYE') {
+            const beratM = document.getElementById('tampil-beratM');
+            const statusM = document.getElementById('tampil-statusM');
+            if(beratM) beratM.innerText = m.beratM ? m.beratM + ' Kg' : '- Kg';
+            if(statusM) {
+                statusM.innerText = m.statusM || 'BELUM';
+                statusM.className = `${getStatusClass(m.statusM)} px-4 py-2 rounded-lg text-xs font-black uppercase shadow-sm`;
+            }
+
+            if(m.officialApprovedM) {
+                const areaTtd = document.getElementById('area-ttdM');
+                const areaApp = document.getElementById('area-approvedM');
+                const img = document.getElementById('img-ttdM');
+                if(areaTtd) areaTtd.classList.replace('block', 'hidden');
+                if(areaApp) areaApp.classList.replace('hidden', 'block');
+                if(img && m.signatureM) img.src = m.signatureM;
+            }
+        }
+    }
+
+    // Helper Class Warna Status
+    function getStatusClass(status) {
+        if(status === 'SAH') return 'bg-emerald-100 text-emerald-700 border border-emerald-300';
+        if(status === 'TIDAK SAH') return 'bg-rose-100 text-rose-700 border border-rose-300';
+        return 'bg-slate-200 text-slate-500 border border-slate-300';
+    }
+
+    // Fungsi Inisialisasi dan Resize Canvas Responsif
+    function initCanvas(canvasId) {
+        const canvas = document.getElementById(canvasId);
+        if(!canvas) return null;
+        
+        const pad = new SignaturePad(canvas, { 
+            backgroundColor: 'rgb(255, 255, 255)',
+            penColor: 'rgb(15, 23, 42)' // Dark slate
+        });
+        
+        function resizeCanvas() {
+            const ratio =  Math.max(window.devicePixelRatio || 1, 1);
+            // Simpan gambar sebelum resize agar tidak hilang
+            const data = pad.toData();
+            canvas.width = canvas.offsetWidth * ratio;
+            canvas.height = canvas.offsetHeight * ratio;
+            canvas.getContext("2d").scale(ratio, ratio);
+            pad.clear();
+            pad.fromData(data);
+        }
+        
+        window.addEventListener("resize", resizeCanvas);
+        resizeCanvas();
+        return pad;
+    }
+
+    // Global Functions for Buttons
+    window.clearCanvas = function(sudut) {
+        if(sudut === 'B' && window.sigPadB) window.sigPadB.clear();
+        if(sudut === 'M' && window.sigPadM) window.sigPadM.clear();
+    };
+
+    window.saveApproval = function(sudut, partaiNum) {
+        const pad = sudut === 'B' ? window.sigPadB : window.sigPadM;
+        
+        if (pad.isEmpty()) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Tanda Tangan Kosong',
+                text: 'Silakan isi tanda tangan terlebih dahulu sebelum menyimpan.',
+                confirmButtonColor: '#3085d6'
+            });
+            return;
+        }
+
+        // Tampilkan konfirmasi
+        Swal.fire({
+            title: 'Simpan Persetujuan?',
+            text: "Setelah disimpan, data dan tanda tangan tidak dapat diubah lagi.",
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonColor: '#10b981',
+            cancelButtonColor: '#ef4444',
+            confirmButtonText: 'Ya, Setujui',
+            cancelButtonText: 'Batal'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                // Proses penyimpanan
+                const dataUrl = pad.toDataURL("image/png");
+                const arrayIdx = partaiNum - 1;
+                const matchRef = ref(database, `pencak_scoring_state/matches/${arrayIdx}`);
+                
+                const updatePayload = {};
+                if(sudut === 'B') {
+                    updatePayload.officialApprovedB = true;
+                    updatePayload.signatureB = dataUrl;
+                } else {
+                    updatePayload.officialApprovedM = true;
+                    updatePayload.signatureM = dataUrl;
+                }
+
+                update(matchRef, updatePayload).then(() => {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Tersimpan!',
+                        text: 'Persetujuan official berhasil direkam.',
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+                }).catch((error) => {
+                    Swal.fire('Error', 'Gagal menyimpan data: ' + error.message, 'error');
+                });
+            }
+        });
+    };
+
+</script>
+</body>
+</html>
